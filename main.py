@@ -32,6 +32,9 @@ from ph4502c import PH4502C
 from pressure import PressureSensor
 from valve import WaterValve
 from flow import FlowSensor
+from pump import PeristalticPump
+from relay import Relay
+from misc import PWM_V2
 
 # --- Configuration ---
 # Adjust these to match your hardware setup
@@ -43,6 +46,14 @@ FLOW_GPIO = 26           # GPIO pin for flow meter signal
 
 PRESSURE_MAX = 1.2       # Max sensor rated pressure (MPa)
 DIVIDER_RATIO = 0.233    # Voltage divider: R1=33K, R2=10K
+
+PUMP_A_DIR_GPIO = 27     # Pump A direction pin
+PUMP_A_PWM = PWM_V2.PWM0 # Pump A PWM channel
+PUMP_B_DIR_GPIO = 28     # Pump B direction pin
+PUMP_B_PWM = PWM_V2.PWM1 # Pump B PWM channel
+
+WATER_PUMP_GPIO = 29     # Main water pump relay GPIO
+GROW_LIGHT_GPIO = 30     # Grow light relay GPIO
 
 
 def init_spectral(i2c, devices):
@@ -129,6 +140,36 @@ def init_flow():
     return flow
 
 
+def init_pumps():
+    """Initialize two peristaltic pumps."""
+    pump_a = PeristalticPump(PUMP_A_DIR_GPIO, PUMP_A_PWM, name="Pump-A")
+    if pump_a.init():
+        print("Pump-A: initialized (DIR=GPIO%d, PWM0)" % PUMP_A_DIR_GPIO)
+    else:
+        print("Pump-A: init failed")
+        pump_a = None
+
+    pump_b = PeristalticPump(PUMP_B_DIR_GPIO, PUMP_B_PWM, name="Pump-B")
+    if pump_b.init():
+        print("Pump-B: initialized (DIR=GPIO%d, PWM1)" % PUMP_B_DIR_GPIO)
+    else:
+        print("Pump-B: init failed")
+        pump_b = None
+
+    return pump_a, pump_b
+
+
+def init_relays():
+    """Initialize main water pump and grow light relays."""
+    water_pump = Relay(WATER_PUMP_GPIO, name="WaterPump")
+    print("WaterPump: initialized on GPIO%d [%s]" % (WATER_PUMP_GPIO, water_pump.status()))
+
+    grow_light = Relay(GROW_LIGHT_GPIO, name="GrowLight")
+    print("GrowLight: initialized on GPIO%d [%s]" % (GROW_LIGHT_GPIO, grow_light.status()))
+
+    return water_pump, grow_light
+
+
 def main():
     # Initialize I2C bus 0 at 400KHz
     i2c = QuecI2C(I2C.I2C0, I2C.FAST_MODE)
@@ -144,6 +185,8 @@ def main():
     pressure_sensor = init_pressure()
     valve = init_valve()
     flow = init_flow()
+    pump_a, pump_b = init_pumps()
+    water_pump, grow_light = init_relays()
 
     print("")
     print("=== System ready, starting main loop ===")
@@ -207,6 +250,16 @@ def main():
 
         # --- Valve Status ---
         print("Valve: %s" % ("OPEN" if valve.is_open else "CLOSED"))
+
+        # --- Pump Status ---
+        if pump_a:
+            print(pump_a.status())
+        if pump_b:
+            print(pump_b.status())
+
+        # --- Relay Status ---
+        print(water_pump.status())
+        print(grow_light.status())
 
         print("---")
         utime.sleep(2)
