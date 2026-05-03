@@ -7,6 +7,7 @@ Sensors:
   BA121        — Conductivity + Temperature, UART 9600bps
   PH4502C      — pH, Analog ADC0
   Pressure     — Water pressure, Analog ADC1
+  Flow         — Hall effect flow meter, GPIO interrupt
 
 Controls:
   Water Valve  — Electromagnetic valve via GPIO + relay
@@ -17,6 +18,7 @@ Wiring:
   ADC0:    via voltage divider from PH4502C Po pin
   ADC1:    via voltage divider from pressure sensor signal
   GPIO:    valve relay control pin
+  GPIO:    flow sensor signal pin
 """
 
 from machine import I2C, UART, ADC
@@ -29,12 +31,15 @@ from ba121 import BA121
 from ph4502c import PH4502C
 from pressure import PressureSensor
 from valve import WaterValve
+from flow import FlowSensor
 
 # --- Configuration ---
 # Adjust these to match your hardware setup
 
 VALVE_GPIO = 25          # GPIO pin for valve relay
 VALVE_ACTIVE_LOW = True  # Most relay modules are active-low
+
+FLOW_GPIO = 26           # GPIO pin for flow meter signal
 
 PRESSURE_MAX = 1.2       # Max sensor rated pressure (MPa)
 DIVIDER_RATIO = 0.233    # Voltage divider: R1=33K, R2=10K
@@ -117,6 +122,13 @@ def init_valve():
     return valve
 
 
+def init_flow():
+    """Initialize Hall effect flow sensor."""
+    flow = FlowSensor(FLOW_GPIO)
+    print("Flow: initialized on GPIO%d (4980 pulses/L)" % FLOW_GPIO)
+    return flow
+
+
 def main():
     # Initialize I2C bus 0 at 400KHz
     i2c = QuecI2C(I2C.I2C0, I2C.FAST_MODE)
@@ -131,6 +143,7 @@ def main():
     ph_sensor = init_ph4502c()
     pressure_sensor = init_pressure()
     valve = init_valve()
+    flow = init_flow()
 
     print("")
     print("=== System ready, starting main loop ===")
@@ -187,6 +200,10 @@ def main():
                 print("Pressure: %.3f MPa (%.3fV)" % (pressure, voltage))
             else:
                 print("Pressure: read failed")
+
+        # --- Water Flow ---
+        rate_lpm, total_liters = flow.read()
+        print("Flow: %.2f L/min, Total: %.3f L" % (rate_lpm, total_liters))
 
         # --- Valve Status ---
         print("Valve: %s" % ("OPEN" if valve.is_open else "CLOSED"))
