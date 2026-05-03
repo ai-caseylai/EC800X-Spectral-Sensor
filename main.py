@@ -36,6 +36,7 @@ from flow import FlowSensor
 from pump import PeristalticPump
 from relay import Relay
 from esp_bridge import ESPBridge
+from mqtt_client import HydroMQTT
 from misc import PWM_V2
 
 # --- Configuration ---
@@ -58,6 +59,15 @@ WATER_PUMP_GPIO = 29     # Main water pump relay GPIO
 GROW_LIGHT_GPIO = 30     # Grow light relay GPIO
 
 ESP32_UART_BAUD = 115200  # ESP32 UART2 baud rate
+
+# MQTT Configuration
+MQTT_SERVER = ""          # MQTT broker address (empty = skip MQTT)
+MQTT_PORT = 1883          # MQTT broker port
+MQTT_USER = None          # MQTT username (None = no auth)
+MQTT_PASSWORD = None      # MQTT password
+MQTT_CLIENT_ID = "ec800x_hydro"
+MQTT_BASE_TOPIC = "hydroponic"
+MQTT_TIMEZONE = 8         # UTC+8
 
 
 def init_spectral(i2c, devices):
@@ -185,6 +195,26 @@ def init_esp_bridge():
     return bridge
 
 
+def init_mqtt():
+    """Initialize MQTT client."""
+    mqtt = HydroMQTT(
+        client_id=MQTT_CLIENT_ID,
+        server=MQTT_SERVER,
+        port=MQTT_PORT,
+        user=MQTT_USER,
+        password=MQTT_PASSWORD,
+        base_topic=MQTT_BASE_TOPIC,
+        timezone=MQTT_TIMEZONE,
+    )
+    if mqtt.init():
+        print("MQTT: initialized (%s:%d, topic=%s)" %
+              (MQTT_SERVER, MQTT_PORT, MQTT_BASE_TOPIC))
+    else:
+        print("MQTT: not connected")
+        mqtt = None
+    return mqtt
+
+
 def main():
     # Initialize I2C bus 0 at 400KHz
     i2c = QuecI2C(I2C.I2C0, I2C.FAST_MODE)
@@ -203,6 +233,7 @@ def main():
     pump_a, pump_b = init_pumps()
     water_pump, grow_light = init_relays()
     bridge = init_esp_bridge()
+    mqtt = init_mqtt()
 
     print("")
     print("=== System ready, starting main loop ===")
@@ -284,6 +315,22 @@ def main():
                 water_pump_relay=water_pump, grow_light_relay=grow_light,
             )
             bridge.send_sensor_data(
+                ph=ph if ph_sensor else None,
+                ec=conductivity if ba121 else None,
+                temp=temperature if ba121 else None,
+                pressure=pressure if pressure_sensor else None,
+                flow_rate=rate_lpm,
+                flow_total=total_liters,
+                valve="OPEN" if valve.is_open else "CLOSED",
+            )
+
+        # --- MQTT ---
+        if mqtt:
+            mqtt.process_commands(
+                valve=valve, pump_a=pump_a, pump_b=pump_b,
+                water_pump_relay=water_pump, grow_light_relay=grow_light,
+            )
+            mqtt.publish_sensor_data(
                 ph=ph if ph_sensor else None,
                 ec=conductivity if ba121 else None,
                 temp=temperature if ba121 else None,

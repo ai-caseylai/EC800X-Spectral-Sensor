@@ -44,6 +44,15 @@ class ESPBridge:
         self._rx_buf = ""
         self._connected = False
 
+    def _timestamp(self):
+        """Get ISO 8601 timestamp string."""
+        try:
+            t = utime.localtime()
+            return "%04d-%02d-%02dT%02d:%02d:%02d" % (
+                t[0], t[1], t[2], t[3], t[4], t[5])
+        except Exception:
+            return ""
+
     def init(self):
         """Initialize UART2. Returns True on success."""
         try:
@@ -90,7 +99,7 @@ class ESPBridge:
         Args:
             kwargs: Sensor key-value pairs.
         """
-        data = {"t": "sensor"}
+        data = {"t": "sensor", "ts": self._timestamp()}
         data.update(kwargs)
         self.send(data)
 
@@ -100,7 +109,7 @@ class ESPBridge:
         Args:
             kwargs: Status key-value pairs.
         """
-        data = {"t": "status"}
+        data = {"t": "status", "ts": self._timestamp()}
         data.update(kwargs)
         self.send(data)
 
