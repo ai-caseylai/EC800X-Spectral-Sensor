@@ -15,6 +15,7 @@ Controls:
 Wiring:
   I2C0:    SCL=GPIO67 (Pin 17), SDA=GPIO66 (Pin 16)
   UART1:   TX=GPIO, RX=GPIO (to BA121 pin4/5)
+  UART2:   TX/RX (to ESP32)
   ADC0:    via voltage divider from PH4502C Po pin
   ADC1:    via voltage divider from pressure sensor signal
   GPIO:    valve relay control pin
@@ -34,6 +35,7 @@ from valve import WaterValve
 from flow import FlowSensor
 from pump import PeristalticPump
 from relay import Relay
+from esp_bridge import ESPBridge
 from misc import PWM_V2
 
 # --- Configuration ---
@@ -54,6 +56,8 @@ PUMP_B_PWM = PWM_V2.PWM1 # Pump B PWM channel
 
 WATER_PUMP_GPIO = 29     # Main water pump relay GPIO
 GROW_LIGHT_GPIO = 30     # Grow light relay GPIO
+
+ESP32_UART_BAUD = 115200  # ESP32 UART2 baud rate
 
 
 def init_spectral(i2c, devices):
@@ -170,6 +174,17 @@ def init_relays():
     return water_pump, grow_light
 
 
+def init_esp_bridge():
+    """Initialize ESP32 UART bridge."""
+    bridge = ESPBridge(UART.UART2, ESP32_UART_BAUD)
+    if bridge.init():
+        print("ESPBridge: initialized on UART2 @ %d bps" % ESP32_UART_BAUD)
+    else:
+        print("ESPBridge: init failed")
+        bridge = None
+    return bridge
+
+
 def main():
     # Initialize I2C bus 0 at 400KHz
     i2c = QuecI2C(I2C.I2C0, I2C.FAST_MODE)
@@ -187,6 +202,7 @@ def main():
     flow = init_flow()
     pump_a, pump_b = init_pumps()
     water_pump, grow_light = init_relays()
+    bridge = init_esp_bridge()
 
     print("")
     print("=== System ready, starting main loop ===")
@@ -260,6 +276,22 @@ def main():
         # --- Relay Status ---
         print(water_pump.status())
         print(grow_light.status())
+
+        # --- ESP32 Bridge ---
+        if bridge:
+            bridge.process_commands(
+                valve=valve, pump_a=pump_a, pump_b=pump_b,
+                water_pump_relay=water_pump, grow_light_relay=grow_light,
+            )
+            bridge.send_sensor_data(
+                ph=ph if ph_sensor else None,
+                ec=conductivity if ba121 else None,
+                temp=temperature if ba121 else None,
+                pressure=pressure if pressure_sensor else None,
+                flow_rate=rate_lpm,
+                flow_total=total_liters,
+                valve="OPEN" if valve.is_open else "CLOSED",
+            )
 
         print("---")
         utime.sleep(2)

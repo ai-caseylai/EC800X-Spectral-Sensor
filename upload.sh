@@ -13,7 +13,7 @@
 
 PORT="${1:-}"
 BAUD="${2:-115200}"
-FILES="quec_i2c.py as7341.py as7263.py ba121.py ph4502c.py pressure.py valve.py flow.py pump.py relay.py main.py"
+FILES="quec_i2c.py as7341.py as7263.py ba121.py ph4502c.py pressure.py valve.py flow.py pump.py relay.py esp_bridge.py main.py"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Auto-detect serial port if not specified
