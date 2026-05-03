@@ -241,10 +241,20 @@ def main():
 
     # Main loop
     while True:
+        # Collect all data into a single dict
+        sensor = {}
+        status = {}
+
         # --- AS7263 NIR ---
         if nir:
             data = nir.measure()
             if data:
+                sensor["nir_R"] = data["R"]
+                sensor["nir_S"] = data["S"]
+                sensor["nir_T"] = data["T"]
+                sensor["nir_U"] = data["U"]
+                sensor["nir_V"] = data["V"]
+                sensor["nir_W"] = data["W"]
                 print("AS7263: R=%d S=%d T=%d U=%d V=%d W=%d" %
                       (data["R"], data["S"], data["T"],
                        data["U"], data["V"], data["W"]))
@@ -253,6 +263,16 @@ def main():
         if vis:
             data = vis.all_channels
             if data:
+                sensor["vis_F1"] = data["F1"]
+                sensor["vis_F2"] = data["F2"]
+                sensor["vis_F3"] = data["F3"]
+                sensor["vis_F4"] = data["F4"]
+                sensor["vis_F5"] = data["F5"]
+                sensor["vis_F6"] = data["F6"]
+                sensor["vis_F7"] = data["F7"]
+                sensor["vis_F8"] = data["F8"]
+                sensor["vis_CLEAR"] = data["CLEAR"]
+                sensor["vis_NIR"] = data["NIR"]
                 print("AS7341: F1=%d F2=%d F3=%d F4=%d F5=%d F6=%d F7=%d F8=%d CLR=%d NIR=%d" %
                       (data["F1"], data["F2"], data["F3"], data["F4"],
                        data["F5"], data["F6"], data["F7"], data["F8"],
@@ -262,51 +282,79 @@ def main():
             utime.sleep_ms(100)
             flicker = vis.flicker_detected
             if flicker:
+                sensor["vis_flicker_hz"] = flicker
                 print("AS7341: Flicker detected: %d Hz" % flicker)
             vis.initialize()
 
         # --- BA121 Conductivity + Temperature ---
+        conductivity = None
+        temperature = None
         if ba121:
             conductivity, temperature = ba121.read()
             if conductivity is not None:
                 ec_ms = conductivity / 1000.0
+                sensor["ec_us"] = conductivity
+                sensor["ec_ms"] = ec_ms
+                sensor["water_temp"] = temperature
                 print("BA121: EC=%.3f mS/cm (%.1f uS/cm), Temp=%.2f C" %
                       (ec_ms, conductivity, temperature))
             else:
                 print("BA121: read failed, status=%s" % ba121.status_string())
 
         # --- PH4502C pH ---
+        ph = None
         if ph_sensor:
             ph = ph_sensor.read_ph()
             if ph is not None:
+                sensor["ph"] = ph
                 print("PH4502C: pH=%.2f" % ph)
             else:
                 print("PH4502C: read failed")
 
         # --- Water Pressure ---
+        pressure = None
         if pressure_sensor:
             pressure, voltage = pressure_sensor.read_pressure()
             if pressure is not None:
+                sensor["pressure_mpa"] = pressure
+                sensor["pressure_v"] = voltage
                 print("Pressure: %.3f MPa (%.3fV)" % (pressure, voltage))
             else:
                 print("Pressure: read failed")
 
         # --- Water Flow ---
         rate_lpm, total_liters = flow.read()
+        sensor["flow_lpm"] = rate_lpm
+        sensor["flow_total_l"] = total_liters
         print("Flow: %.2f L/min, Total: %.3f L" % (rate_lpm, total_liters))
 
         # --- Valve Status ---
-        print("Valve: %s" % ("OPEN" if valve.is_open else "CLOSED"))
+        valve_state = "OPEN" if valve.is_open else "CLOSED"
+        status["valve"] = valve_state
+        print("Valve: %s" % valve_state)
 
         # --- Pump Status ---
         if pump_a:
+            status["pump_a_dir"] = pump_a.direction
+            status["pump_a_speed"] = pump_a.speed
+            status["pump_a_running"] = pump_a.is_running
             print(pump_a.status())
         if pump_b:
+            status["pump_b_dir"] = pump_b.direction
+            status["pump_b_speed"] = pump_b.speed
+            status["pump_b_running"] = pump_b.is_running
             print(pump_b.status())
 
         # --- Relay Status ---
+        status["water_pump"] = "ON" if water_pump.is_on else "OFF"
+        status["grow_light"] = "ON" if grow_light.is_on else "OFF"
         print(water_pump.status())
         print(grow_light.status())
+
+        # Combine sensor + status for publishing
+        all_data = {}
+        all_data.update(sensor)
+        all_data.update(status)
 
         # --- ESP32 Bridge ---
         if bridge:
@@ -314,15 +362,7 @@ def main():
                 valve=valve, pump_a=pump_a, pump_b=pump_b,
                 water_pump_relay=water_pump, grow_light_relay=grow_light,
             )
-            bridge.send_sensor_data(
-                ph=ph if ph_sensor else None,
-                ec=conductivity if ba121 else None,
-                temp=temperature if ba121 else None,
-                pressure=pressure if pressure_sensor else None,
-                flow_rate=rate_lpm,
-                flow_total=total_liters,
-                valve="OPEN" if valve.is_open else "CLOSED",
-            )
+            bridge.send_sensor_data(**all_data)
 
         # --- MQTT ---
         if mqtt:
@@ -330,15 +370,7 @@ def main():
                 valve=valve, pump_a=pump_a, pump_b=pump_b,
                 water_pump_relay=water_pump, grow_light_relay=grow_light,
             )
-            mqtt.publish_sensor_data(
-                ph=ph if ph_sensor else None,
-                ec=conductivity if ba121 else None,
-                temp=temperature if ba121 else None,
-                pressure=pressure if pressure_sensor else None,
-                flow_rate=rate_lpm,
-                flow_total=total_liters,
-                valve="OPEN" if valve.is_open else "CLOSED",
-            )
+            mqtt.publish_sensor_data(**all_data)
 
         print("---")
         utime.sleep(2)
