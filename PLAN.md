@@ -6,29 +6,44 @@
 
 ## 一、專案概述
 
-基於移遠 EC800X QuecDuino 開發板，搭建一套水耕栽培的感測與控制系統。系統整合光譜感測、水質監測、流量/壓力偵測、以及泵閥控制，可即時監控水耕環境並自動化控制水流。
+基於移遠 EC800X QuecDuino 開發板，搭建一套水耕栽培的感測與控制系統。系統整合光譜感測、水質監測、流量/壓力偵測、泵閥控制、以及 ESP32 雙 MCU 通訊，可即時監控水耕環境並自動化控制水流。
 
 ### 系統架構
 
 ```
-                    ┌─────────────────────────────┐
-                    │       EC800X QuecDuino       │
-                    │      (QuecPython MCU)        │
-                    │                              │
-  I2C Bus ◄────────┤  GPIO66 (SDA)  GPIO67 (SCL)  │
-                    │                              │
-  UART1  ◄─────────┤  TX / RX                     │
-                    │                              │
-  ADC0   ◄─────────┤  ADC0 (pH)                   │
-  ADC1   ◄─────────┤  ADC1 (Pressure)             │
-                    │                              │
-  GPIO   ◄─────────┤  GPIO25 (Valve)              │
-  GPIO   ◄─────────┤  GPIO26 (Flow Sensor)        │
-  GPIO   ◄─────────┤  GPIO27 (Pump-A DIR)         │
-  GPIO   ◄─────────┤  GPIO28 (Pump-B DIR)         │
-  PWM    ◄─────────┤  PWM0 (Pump-A Speed)         │
-  PWM    ◄─────────┤  PWM1 (Pump-B Speed)         │
-                    └─────────────────────────────┘
+                    ┌─────────────────────────────────┐
+                    │        EC800X QuecDuino          │
+                    │       (QuecPython MCU)           │
+                    │                                  │
+  I2C Bus ◄────────┤  GPIO66 (SDA)    GPIO67 (SCL)    │
+                    │                                  │
+  UART1  ◄─────────┤  TX / RX          → BA121        │
+  UART2  ◄─────────┤  TX / RX          → ESP32        │
+                    │                                  │
+  ADC0   ◄─────────┤  ADC0 (pH)                       │
+  ADC1   ◄─────────┤  ADC1 (Pressure)                 │
+                    │                                  │
+  GPIO   ◄─────────┤  GPIO25 (Valve)                  │
+  GPIO   ◄─────────┤  GPIO26 (Flow Sensor)            │
+  GPIO   ◄─────────┤  GPIO27 (Pump-A DIR)             │
+  GPIO   ◄─────────┤  GPIO28 (Pump-B DIR)             │
+  PWM    ◄─────────┤  PWM0 (Pump-A Speed)             │
+  PWM    ◄─────────┤  PWM1 (Pump-B Speed)             │
+  GPIO   ◄─────────┤  GPIO29 (Water Pump Relay)       │
+  GPIO   ◄─────────┤  GPIO30 (Grow Light Relay)       │
+  UART2  ◄─────────┤  TX / RX          → ESP32        │
+                    └──────────────┬───────────────────┘
+                                   │
+                                   │ UART2 115200bps
+                                   │ (JSON protocol)
+                                   │
+                    ┌──────────────▼───────────────────┐
+                    │           ESP32                   │
+                    │       (ESPHome / ESP-claw)        │
+                    │                                   │
+                    │  WiFi / MQTT → Home Assistant     │
+                    │  遠端監控 + 控制指令下发            │
+                    └───────────────────────────────────┘
 ```
 
 ---
@@ -39,7 +54,7 @@
 |---|-------------|------|------|---------|------|
 | 1 | NIR 光譜感測器 | AS7263 | I2C | 0x49 | 近紅外光譜 610-860nm，6 通道 |
 | 2 | 可見光光譜感測器 | AS7341 | I2C | 0x39 | 可見光+近紅外 390-890nm，10 通道 |
-| 3 | 導電度+溫度感測器 | BA121 | UART 9600bps | — | EC 導電度 (μS/cm) + 水溫 (°C) |
+| 3 | 導電度+溫度感測器 | BA121 | UART1 9600bps | — | EC 導電度 (μS/cm) + 水溫 (°C) |
 | 4 | pH 感測器 | PH4502C | ADC0 | — | pH 值 (0-14) |
 | 5 | 水壓感測器 | XDB401/USP10 | ADC1 | — | 水壓 (0-1.2 MPa) |
 | 6 | 霍爾效應流量計 | YF-S201 相容 | GPIO IRQ | — | 水流量 (L/min) + 累計流量 |
@@ -48,6 +63,15 @@
 | 9 | 蠕動泵 B | 5V 微型蠕動泵 | GPIO+PWM | — | pH 調節泵，方向+流速控制 |
 | 10 | 總水泵繼電器 | 通用繼電器模組 | GPIO | — | 總水泵 ON/OFF 控制 |
 | 11 | 種植燈繼電器 | 通用繼電器模組 | GPIO | — | 種植燈 ON/OFF 控制 |
+| 12 | ESP32 通訊模組 | ESP32 / ESP32-S3 | UART2 | — | WiFi/MQTT 橋接，遠端監控 |
+
+### UART 資源分配
+
+| UART | 用途 | 波特率 | 狀態 |
+|------|------|--------|------|
+| UART0 | Debug / REPL | 115200 | 開發用 |
+| UART1 | BA121 導電度感測器 | 9600 | 已佔用 |
+| **UART2** | **ESP32 通訊橋接** | **115200** | **ESP32 專用** |
 
 ---
 
@@ -68,7 +92,7 @@ EC800X QuecDuino          AS7341 (0x39)         AS7263 (0x49)
                I2C0 @ 400KHz (FAST_MODE)
 ```
 
-### 3.2 UART（BA121 導電度感測器）
+### 3.2 UART1（BA121 導電度感測器）
 
 ```
 EC800X QuecDuino          BA121 模組
@@ -81,7 +105,26 @@ EC800X QuecDuino          BA121 模組
                UART1 @ 9600bps, 8N1
 ```
 
-### 3.3 ADC（pH + 水壓，需分壓電路）
+### 3.3 UART2（ESP32 通訊橋接）
+
+```
+EC800X QuecDuino          ESP32
+┌──────────┐              ┌──────────┐
+│ UART2 TX │──────────────┤ RX       │
+│ UART2 RX │──────────────┤ TX       │
+│ GND      │──────────────┤ GND      │
+└──────────┘              └──────────┘
+               UART2 @ 115200bps, 8N1
+               JSON line protocol (newline delimited)
+
+  注意：
+  - TX/RX 交叉連接（EC800X TX → ESP32 RX）
+  - 雙方 GND 必須相連
+  - 邏輯電平均為 3.3V，無需電平轉換
+  - ESP32 端需運行對應的 UART 接收程式
+```
+
+### 3.4 ADC（pH + 水壓，需分壓電路）
 
 PH4502C 和壓力感測器輸出 0-5V，EC800X ADC 最大接受 1.3V，
 必須使用電阻分壓（R1=33KΩ, R2=10KΩ）。
@@ -103,7 +146,7 @@ PH4502C:  Po pin → 分壓 → ADC0
 壓力感測器: Signal → 分壓 → ADC1
 ```
 
-### 3.4 GPIO（電磁閥 + 流量計）
+### 3.5 GPIO（電磁閥 + 流量計）
 
 ```
 EC800X QuecDuino          繼電器模組            電磁閥
@@ -127,7 +170,7 @@ EC800X QuecDuino          YF-S201 流量計
   4980 脈衝 = 1 公升
 ```
 
-### 3.5 PWM + GPIO（蠕動泵 ×2）
+### 3.6 PWM + GPIO（蠕動泵 ×2）
 
 ```
 EC800X QuecDuino          MOS 驅動板            蠕動泵
@@ -150,7 +193,7 @@ EC800X QuecDuino          MOS 驅動板            蠕動泵
   頻率: 1000 Hz (1 kHz)
 ```
 
-### 3.6 GPIO（繼電器 ×2）
+### 3.7 GPIO（繼電器 ×2）
 
 ```
 EC800X QuecDuino          繼電器模組 A           總水泵
@@ -192,6 +235,7 @@ QuecPythonDriver/
 ├── flow.py          # 霍爾效應流量計驅動
 ├── pump.py          # 蠕動泵驅動 (方向 + 流速)
 ├── relay.py         # 繼電器控制 (總水泵 + 種植燈)
+├── esp_bridge.py    # ESP32 UART 通訊橋接
 ├── main.py          # 主程式 (開機自動執行)
 └── upload.sh        # 上傳腳本 (ampy/mpremote)
 ```
@@ -200,16 +244,17 @@ QuecPythonDriver/
 
 ```
 main.py
-  ├── quec_i2c.py ← as7341.py, as7263.py
-  ├── as7341.py   ← quec_i2c (I2CDevice)
-  ├── as7263.py   ← quec_i2c (QuecI2C)
-  ├── ba121.py    (獨立, UART)
-  ├── ph4502c.py  (獨立, ADC)
-  ├── pressure.py (獨立, ADC)
-  ├── valve.py    (獨立, GPIO)
-  ├── flow.py     (獨立, GPIO IRQ)
-  └── pump.py     (獨立, GPIO + PWM_V2)
-  └── relay.py    (獨立, GPIO)
+  ├── quec_i2c.py   ← as7341.py, as7263.py
+  ├── as7341.py     ← quec_i2c (I2CDevice)
+  ├── as7263.py     ← quec_i2c (QuecI2C)
+  ├── ba121.py      (獨立, UART1)
+  ├── ph4502c.py    (獨立, ADC)
+  ├── pressure.py   (獨立, ADC)
+  ├── valve.py      (獨立, GPIO)
+  ├── flow.py       (獨立, GPIO IRQ)
+  ├── pump.py       (獨立, GPIO + PWM_V2)
+  ├── relay.py      (獨立, GPIO)
+  └── esp_bridge.py (獨立, UART2)
 ```
 
 ### 4.3 各驅動 API 詳細說明
@@ -309,7 +354,7 @@ data = sensor.measure()
 
 ---
 
-#### 4.3.4 ba121.py — BA121 導電度+溫度 (UART)
+#### 4.3.4 ba121.py — BA121 導電度+溫度 (UART1)
 
 ```python
 from ba121 import BA121
@@ -476,13 +521,70 @@ light.off()              # 關燈
 
 ---
 
+#### 4.3.11 esp_bridge.py — ESP32 UART 通訊橋接 (UART2)
+
+EC800X 與 ESP32 之間的 JSON 通訊協定，用於：
+- **上傳**：EC800X 將感測器資料送給 ESP32 → ESP32 轉發 WiFi/MQTT
+- **下載**：ESP32 發送控制指令給 EC800X → 執行閥/泵/繼電器操作
+
+```python
+from esp_bridge import ESPBridge
+from machine import UART
+
+bridge = ESPBridge(UART.UART2, baud=115200)
+bridge.init()
+
+# 發送感測器資料
+bridge.send_sensor_data(ph=6.8, ec=1500, temp=25.3, pressure=0.5)
+
+# 發送設備狀態
+bridge.send_status(valve="OPEN", pump_a="forward@80", pump_b="STOPPED")
+
+# 接收並執行指令
+bridge.process_commands(
+    valve=valve, pump_a=pump_a, pump_b=pump_b,
+    water_pump_relay=water_pump, grow_light_relay=grow_light,
+)
+```
+
+**通訊協定（JSON + newline）：**
+
+EC800X → ESP32（感測器資料，每 2 秒自動送出）：
+```json
+{"t":"sensor","ph":6.8,"ec":1500,"temp":25.3,"pressure":0.5,"flow_rate":1.2,"flow_total":3.5,"valve":"CLOSED"}
+```
+
+EC800X → ESP32（設備狀態）：
+```json
+{"t":"status","valve":"OPEN","pump_a":"forward@80","pump_b":"STOPPED","water_pump":"ON","grow_light":"OFF"}
+```
+
+EC800X → ESP32（指令確認）：
+```json
+{"t":"ack","id":"cmd_001","ok":true,"msg":"valve opened"}
+{"t":"ack","id":"cmd_002","ok":false,"msg":"unknown pump: c"}
+```
+
+ESP32 → EC800X（控制指令）：
+
+| 指令 | JSON 範例 | 說明 |
+|------|----------|------|
+| 開閥 | `{"cmd":"valve","action":"open"}` | action: open/close/toggle |
+| 控制泵 | `{"cmd":"pump","id":"a","speed":80,"dir":"forward"}` | id: a/b, speed: 0-100, dir: forward/reverse |
+| 停泵 | `{"cmd":"pump","id":"b","action":"stop"}` | 或 speed=0 |
+| 繼電器 | `{"cmd":"relay","id":"water_pump","action":"on"}` | id: water_pump/grow_light, action: on/off/toggle |
+
+---
+
 ## 五、GPIO 與資源分配
 
 | 資源 | 腳位/通道 | 用途 | 備註 |
 |------|----------|------|------|
 | I2C0 SDA | GPIO66 (Pin16) | AS7341 + AS7263 | 400KHz |
 | I2C0 SCL | GPIO67 (Pin17) | AS7341 + AS7263 | 400KHz |
+| UART0 | TX/RX | Debug / REPL | 開發用 |
 | UART1 | TX/RX | BA121 導電度 | 9600bps |
+| **UART2** | **TX/RX** | **ESP32 通訊** | **115200bps** |
 | ADC0 | ADC0 | PH4502C pH | 分壓 0.233 |
 | ADC1 | ADC1 | 水壓感測器 | 分壓 0.233 |
 | GPIO25 | OUT | 電磁閥繼電器 | active-low |
@@ -513,6 +615,7 @@ light.off()              # 關燈
 ┌──────────────┐
 │ 初始化感測器  │ ← AS7341, AS7263, BA121, pH, 壓力
 │ 初始化控制器  │ ← 閥, 流量計, 蠕動泵 A/B, 繼電器
+│ 初始化通訊    │ ← ESP32 UART2 橋接
 └──────┬───────┘
        │
        ▼
@@ -528,6 +631,7 @@ light.off()              # 關燈
 │  │閥狀態    ││ ← OPEN/CLOSED
 │  │泵狀態    ││ ← A/B 各自方向+速度
 │  │繼電器    ││ ← 總水泵 + 種植燈 ON/OFF
+│  │ESP32     ││ ← 接收指令 + 送出感測器資料
 │  └──────────┘│
 │  sleep(2s)   │
 └──────┬───────┘
@@ -538,9 +642,72 @@ light.off()              # 關燈
 
 ---
 
-## 七、上傳與部署
+## 七、ESP32 端整合指南
 
-### 7.1 上傳方式
+ESP32 端需運行 UART 接收程式，將 EC800X 資料轉發至 WiFi/MQTT。
+
+### 7.1 ESP32 接線
+
+```
+ESP32              EC800X QuecDuino
+┌──────────┐      ┌──────────┐
+│ GPIO16 RX│◄─────┤ UART2 TX │
+│ GPIO17 TX│─────►│ UART2 RX │
+│ GND      │◄────►│ GND      │
+└──────────┘      └──────────┘
+```
+
+### 7.2 ESP32 Arduino 範例程式
+
+```cpp
+// ESP32 — UART to MQTT Bridge for EC800X Hydroponic System
+#include <HardwareSerial.h>
+
+HardwareSerial ecSerial(1);  // UART1 on ESP32
+
+void setup() {
+    Serial.begin(115200);
+    ecSerial.begin(115200, SERIAL_8N1, 16, 17);  // RX=16, TX=17
+}
+
+void loop() {
+    // Read JSON lines from EC800X
+    static String buf = "";
+    while (ecSerial.available()) {
+        char c = ecSerial.read();
+        if (c == '\n') {
+            // Parse JSON and forward to MQTT
+            Serial.println("From EC800X: " + buf);
+            // mqtt_client.publish("hydroponic/sensors", buf.c_str());
+            buf = "";
+        } else {
+            buf += c;
+        }
+    }
+
+    // Send commands to EC800X
+    // ecSerial.println("{\"cmd\":\"valve\",\"action\":\"open\"}");
+    // ecSerial.println("{\"cmd\":\"pump\",\"id\":\"a\",\"speed\":80,\"dir\":\"forward\"}");
+    // ecSerial.println("{\"cmd\":\"relay\",\"id\":\"grow_light\",\"action\":\"on\"}");
+}
+```
+
+### 7.3 MQTT Topic 建議
+
+| Topic | 方向 | 說明 |
+|-------|------|------|
+| `hydroponic/sensors` | EC800X → MQTT | 感測器資料 |
+| `hydroponic/status` | EC800X → MQTT | 設備狀態 |
+| `hydroponic/ack` | EC800X → MQTT | 指令確認 |
+| `hydroponic/cmd/valve` | MQTT → EC800X | 閥控制 |
+| `hydroponic/cmd/pump` | MQTT → EC800X | 泵控制 |
+| `hydroponic/cmd/relay` | MQTT → EC800X | 繼電器控制 |
+
+---
+
+## 八、上傳與部署
+
+### 8.1 上傳方式
 
 ```bash
 # 方法一：使用上傳腳本
@@ -549,32 +716,33 @@ chmod +x upload.sh
 
 # 方法二：ampy 手動上傳
 pip install adafruit-ampy
-for f in quec_i2c.py as7341.py as7263.py ba121.py ph4502c.py pressure.py valve.py flow.py pump.py relay.py main.py; do
+for f in quec_i2c.py as7341.py as7263.py ba121.py ph4502c.py pressure.py valve.py flow.py pump.py relay.py esp_bridge.py main.py; do
     ampy -p /dev/tty.usbmodemXXXX -b 115200 put $f
 done
 
 # 方法三：QPYcom GUI 手動拖放
 ```
 
-### 7.2 上傳檔案清單
+### 8.2 上傳檔案清單
 
 ```
-quec_i2c.py   → I2C 適配層
-as7341.py     → AS7341 驅動
-as7263.py     → AS7263 驅動
-ba121.py      → BA121 驅動
-ph4502c.py    → pH 驅動
-pressure.py   → 壓力驅動
-valve.py      → 閥控制
-flow.py       → 流量驅動
-pump.py       → 泵控制
-relay.py      → 繼電器控制 (總水泵 + 種植燈)
-main.py       → 主程式 (開機自動執行)
+quec_i2c.py    → I2C 適配層
+as7341.py      → AS7341 驅動
+as7263.py      → AS7263 驅動
+ba121.py       → BA121 驅動
+ph4502c.py     → pH 驅動
+pressure.py    → 壓力驅動
+valve.py       → 閥控制
+flow.py        → 流量驅動
+pump.py        → 泵控制
+relay.py       → 繼電器控制 (總水泵 + 種植燈)
+esp_bridge.py  → ESP32 UART 通訊橋接
+main.py        → 主程式 (開機自動執行)
 ```
 
 ---
 
-## 八、驗證步驟
+## 九、驗證步驟
 
 上傳後依序驗證：
 
@@ -592,10 +760,12 @@ main.py       → 主程式 (開機自動執行)
 | 10 | 閥控制 | open/close 切換正常 |
 | 11 | 泵控制 | start/stop/speed/direction 正常 |
 | 12 | 繼電器 | water_pump.on/off + grow_light.on/off 正常 |
+| 13 | ESP32 通訊 | UART2 收到 JSON 感測器資料 |
+| 14 | ESP32 遠端控制 | ESP32 發送指令，EC800X 正確執行並回傳 ack |
 
 ---
 
-## 九、注意事項
+## 十、注意事項
 
 1. **電壓分壓**：PH4502C 和壓力感測器輸出 0-5V，EC800X ADC 最大 1.3V，必須使用分壓電路（R1=33KΩ, R2=10KΩ，分壓比 ≈ 0.233）
 2. **BA121 讀取延遲**：讀取指令後需等待 800ms 才能收到回應
@@ -603,11 +773,13 @@ main.py       → 主程式 (開機自動執行)
 4. **AS7341 SMUX**：10 通道需分兩次讀取（F1-F4+NIR + F5-F8+CLEAR），約需 200ms
 5. **蠕動泵 PWM 頻率**：建議 1-10 KHz，過低會有震動，過高 MOS 驅動板可能不支援
 6. **GPIO 電壓**：EC800X GPIO 為 3.3V，驅動 5V 繼電器/泵時確認邏輯電平相容
-7. **main.py**：QuecPython 開機自動執行 `main.py`，修改後重啟模組即生效
+7. **ESP32 UART**：雙方均為 3.3V 邏輯，無需電平轉換；TX/RX 交叉連接
+8. **ESP32 通訊協定**：每條訊息以 `\n` 結尾，JSON 格式，方便除錯和擴展
+9. **main.py**：QuecPython 開機自動執行 `main.py`，修改後重啟模組即生效
 
 ---
 
-## 十、GitHub 儲存庫
+## 十一、GitHub 儲存庫
 
 https://github.com/ai-caseylai/EC800X-Spectral-Sensor
 
